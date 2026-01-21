@@ -51,7 +51,8 @@ def fetch_page(page):
         ),
         "Accept": "application/json, text/plain, */*",
         "Referer": "https://in-tendhost.co.uk/gggi/aspx/Tenders/Current",
-        "X-Requested-With": "XMLHttpRequest"
+        "X-Requested-With": "XMLHttpRequest",
+        "Accept-Language": "en-US,en;q=0.9"
     }
 
     response = requests.get(
@@ -61,19 +62,20 @@ def fetch_page(page):
         timeout=30
     )
 
-    # 🔍 Defensive debugging
+    print("STATUS:", response.status_code)
+    print("HEADERS:", response.headers.get("Content-Type"))
+    print("BODY (first 500 chars):", response.text[:500])
+
     if response.status_code != 200:
-        raise RuntimeError(
-            f"Upstream error {response.status_code}: {response.text[:200]}"
-        )
+        raise RuntimeError("Upstream blocked request")
 
-    try:
-        return response.json()
-    except Exception:
-        raise RuntimeError(
-            f"Non-JSON response received: {response.text[:300]}"
-        )
+    if not response.text.strip():
+        raise RuntimeError("Empty response from upstream")
 
+    if not response.text.strip().startswith("{"):
+        raise RuntimeError("Non-JSON response (HTML / WAF)")
+
+    return response.json()
 
 # -----------------------------
 # Frontend Page
@@ -85,46 +87,54 @@ def home(request: Request):
 # -----------------------------
 # Excel Generator Endpoint
 # -----------------------------
+from fastapi import HTTPException
+
 @app.get("/download-excel")
 def download_excel():
-    all_rows = []
-    seen_ids = set()
+    try:
+        all_rows = []
+        seen_ids = set()
 
-    first_page = fetch_page(1)
-    total_pages = first_page.get("PageCount", 1)
+        first_page = fetch_page(1)
+        total_pages = first_page.get("PageCount", 1)
 
-    for page in range(1, total_pages + 1):
-        data = fetch_page(page).get("Data", [])
+        for page in range(1, total_pages + 1):
+            data = fetch_page(page).get("Data", [])
 
-        for item in data:
-            unique_id = item.get("UniqueID")
-            if unique_id in seen_ids:
-                continue
-            seen_ids.add(unique_id)
+            for item in data:
+                uid = item.get("UniqueID")
+                if uid in seen_ids:
+                    continue
+                seen_ids.add(uid)
 
-            all_rows.append({
-                "ProjectID": item.get("ProjectID"),
-                "UniqueID": unique_id,
-                "Reference": item.get("Reference"),
-                "Title": item.get("Title"),
-                "Customer": item.get("Customer"),
-                "Description": item.get("Description"),
-                "Deadline": parse_dotnet_date(item.get("DateDocsAvailableUntil")),
-                "Type": item.get("Type"),
-                "Category": item.get("Category"),
-                "UTCTimeZoneName": item.get("UTCTimeZoneName"),
-            })
+                all_rows.append({
+                    "ProjectID": item.get("ProjectID"),
+                    "UniqueID": uid,
+                    "Reference": item.get("Reference"),
+                    "Title": item.get("Title"),
+                    "Customer": item.get("Customer"),
+                    "Description": item.get("Description"),
+                    "Deadline": parse_dotnet_date(item.get("DateDocsAvailableUntil")),
+                    "Type": item.get("Type"),
+                    "Category": item.get("Category"),
+                    "UTCTimeZoneName": item.get("UTCTimeZoneName"),
+                })
 
-    df = pd.DataFrame(all_rows)
+        df = pd.DataFrame(all_rows)
 
-    buffer = BytesIO()
-    df.to_excel(buffer, index=False)
-    buffer.seek(0)
+        buffer = BytesIO()
+        df.to_excel(buffer, index=False)
+        buffer.seek(0)
 
-    return Response(
-        content=buffer.read(),
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={
-            "Content-Disposition": 'attachment; filename="gggi_tenders.xlsx"'
-        }
-    )
+        return Response(
+            content=buffer.read(),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": "attachment; filename=gggi_tenders.xlsx"}
+        )
+
+    except Exception as e:
+        print("ERROR:", str(e))
+        raise HTTPException(
+            status_code=502,
+            detail="Upstream procurement site blocked this request from cloud IP"
+        )
