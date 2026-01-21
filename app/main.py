@@ -43,9 +43,37 @@ def fetch_page(page):
         "_": int(datetime.now().timestamp() * 1000)
     }
 
-    response = requests.get(BASE_URL, params=params, timeout=30)
-    response.raise_for_status()
-    return response.json()
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/json, text/plain, */*",
+        "Referer": "https://in-tendhost.co.uk/gggi/aspx/Tenders/Current",
+        "X-Requested-With": "XMLHttpRequest"
+    }
+
+    response = requests.get(
+        BASE_URL,
+        params=params,
+        headers=headers,
+        timeout=30
+    )
+
+    # 🔍 Defensive debugging
+    if response.status_code != 200:
+        raise RuntimeError(
+            f"Upstream error {response.status_code}: {response.text[:200]}"
+        )
+
+    try:
+        return response.json()
+    except Exception:
+        raise RuntimeError(
+            f"Non-JSON response received: {response.text[:300]}"
+        )
+
 
 # -----------------------------
 # Frontend Page
